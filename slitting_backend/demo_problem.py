@@ -1,11 +1,14 @@
 from decimal import Decimal
 
-from .models import (
+from slitting_backend.models import (
     CustomerOrder,
     ParentRollMetadata,
     UsableInterval,
+    SlittingProblem
 )
 
+from .batching import group_compatible_orders
+from .lane_demand import lane_demand_conversion
 
 # ---------------------------------------------------------------------------
 # Parent roll
@@ -105,6 +108,33 @@ orders = (
     ),
 )
 
+problem = SlittingProblem(
+    parent_roll=parent_roll,
+    usable_intervals=usable_intervals,
+    orders=orders,
+)
+
+batches = group_compatible_orders(problem.orders)
+
+batches = group_compatible_orders(problem.orders)
+
+assert len(batches) == 2
+assert batches[0].key.requested_length_m == Decimal("500")
+assert batches[1].key.requested_length_m == Decimal("750")
+
+lane_counts = [
+    len(lane_demand_conversion(batch))
+    for batch in batches
+]
+
+assert lane_counts == [23, 27]
+
+for batch, count in zip(batches, lane_counts):
+    print(
+        f"{batch.batch_id}: "
+        f"{batch.key.requested_length_m} m, "
+        f"{count} lane demands"
+    )
 
 if __name__ == "__main__":
     print("Parent roll")

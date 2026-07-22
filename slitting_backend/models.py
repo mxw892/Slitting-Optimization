@@ -153,6 +153,7 @@ class CustomerOrder:
 # ---------------------------------------------------------------------------
 
 # values that must match for a grouped order
+# nominal thickness and film type will be checked in SlittingProblem
 # length must be equal since cuts affect all lanes in the same run
 @dataclass(frozen=True, slots=True)
 class CompatibilityKey:
@@ -245,7 +246,179 @@ class LaneDemand:
                 "compatibility_key must be a CompatibilityKey"
             )
 
+# ---------------------------------------------------------------------------
+# Allocation-result models
+# ---------------------------------------------------------------------------
 
+# the region the order is assigned to
+@dataclass(frozen=True, slots=True)
+class LanePlacement:
+
+    lane_demand: LaneDemand
+    region_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.lane_demand, LaneDemand):
+            raise TypeError(
+                "lane_demand must be a LaneDemand"
+            )
+
+        _require_non_blank_string(
+            self.region_id,
+            "region_id",
+        )
+
+# the interval within the region in a run
+@dataclass(frozen=True, slots=True)
+class IntervalAllocation:
+
+    usable_interval: UsableInterval
+    placements: tuple[LanePlacement, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.usable_interval, UsableInterval):
+            raise TypeError(
+                "usable_interval must be a UsableInterval"
+            )
+
+        if not isinstance(self.placements, tuple):
+            raise TypeError(
+                "placements must be a tuple"
+            )
+
+        seen_lane_demand_ids: set[str] = set()
+        for placement in self.placements:
+            if not isinstance(placement, LanePlacement):
+                raise TypeError(
+                    "placements must contain only LanePlacement objects"
+                )
+
+            if (placement.region_id != self.usable_interval.region_id):
+                raise ValueError(f"Lane placement region {placement.region_id!r} is not equal to interval region {self.usable_interval.region_id!r}")
+
+            lane_demand_id = (
+                placement.lane_demand.lane_demand_id
+            )
+
+            if lane_demand_id in seen_lane_demand_ids:
+                raise ValueError(
+                    f"duplicate lane_demand_id in interval: "
+                    f"{lane_demand_id!r}"
+                )
+
+            seen_lane_demand_ids.add(lane_demand_id)
+
+        if self.used_width_mm > self.usable_interval.capacity_mm:
+            raise ValueError(
+                f"Interval {self.usable_interval.region_id!r} exceeds capacity."
+            )
+
+    # adds all lane widths within the interval
+    @property
+    def used_width_mm(self) -> Decimal:
+        return sum(
+            (
+                placement.lane_demand.width_mm
+                for placement in self.placements
+            ),
+            start=Decimal("0"),
+        )
+
+    # left over scrap
+    @property
+    def remaining_width(self) -> Decimal:
+        return (
+            self.usable_interval.capacity_mm - self.used_width_mm
+        )
+
+@dataclass(frozen=True, slots=True)
+class ProductionRun:
+
+    run_number: int
+    compatibility_key: CompatibilityKey
+    interval_allocations: tuple[IntervalAllocation, ...]
+
+    def __post_init__(self) -> None:
+
+        # general checks
+        if (
+            not isinstance(self.run_number, int)
+            or isinstance(self.run_number, bool)
+        ):
+            raise TypeError("run_number must be an integer")
+
+        if self.run_number <= 0:
+            raise ValueError("run_number must be greater than zero")
+        if not isinstance(
+            self.compatibility_key,
+            CompatibilityKey,
+        ):
+            raise TypeError(
+                "compatibility_key must be a CompatibilityKey"
+            )
+        if not isinstance(self.interval_allocations, tuple):
+            raise TypeError(
+                "interval_allocationss must be a tuple"
+            )
+        if not self.interval_allocations:
+            raise ValueError(
+                "interval_allocationss must not be empty"
+            )
+
+        # duplicate tracking
+        seen_region_ids: set[str] = set()
+        seen_lane_demand_ids: set[str] = set()
+        run_roll_id: str | None = None
+        total_placement_count = 0
+
+        for allocation in self.interval_allocations:
+            if not isinstance(allocation, IntervalAllocation):
+                raise TypeError(
+                    "interval_allocationss must contain only IntervalAllocation objects"
+                )
+            region_id = allocation.usable_interval.region_id
+            if region_id in seen_region_ids:
+                raise ValueError(
+                    f"duplicate region_id in run: {region_id!r}"
+                )
+            seen_region_ids.add(region_id)
+
+            allocation_roll_id = (
+                allocation.usable_interval.roll_id
+            )
+
+            if run_roll_id is None:
+                run_roll_id = allocation_roll_id
+            elif allocation_roll_id != run_roll_id:
+                raise ValueError(
+                    "all interval allocations in a run must belong to the same parent roll"
+                )
+
+            for placement in allocation.placements:
+                lane = placement.lane_demand
+                lane_demand_id = lane.lane_demand_id
+
+                if lane_demand_id in seen_lane_demand_ids:
+                    raise ValueError(
+                        f"duplicate lane_demand_id in run: {lane_demand_id!r}"
+                    )
+                seen_lane_demand_ids.add(lane_demand_id)
+
+                if (
+                    lane.compatibility_key
+                    != self.compatibility_key
+                ):
+                    raise ValueError(
+                        f"lane demand {lane_demand_id!r} "
+                        f"does not match the run compatibility key"
+                    )
+                total_placement_count += 1
+
+        if total_placement_count == 0:
+            raise ValueError(
+                "production run must contain at least one placement"
+            )
+            
 # ---------------------------------------------------------------------------
 # Complete optimization-problem model
 # ---------------------------------------------------------------------------
